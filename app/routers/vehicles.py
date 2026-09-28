@@ -2,13 +2,17 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from ..database import get_db
 from ..models import Vehiculo
-from ..schemas import VehiculoCreate, VehiculoOut
+from ..schemas import VehiculoCreate, VehiculoOut, VehiculoEstadoActualizar
 
 router = APIRouter(prefix="/vehiculos", tags=["vehiculos"])
+
+ESTADOS_VALIDOS = {"active", "en_transito", "en_mantenimiento", "fuera_de_servicio"}
+
 
 @router.get("/", response_model=list[VehiculoOut])
 def list_vehicles(db: Session = Depends(get_db)):
     return db.query(Vehiculo).all()
+
 
 @router.post("/", response_model=VehiculoOut, status_code=201)
 def create_vehicle(payload: VehiculoCreate, db: Session = Depends(get_db)):
@@ -18,9 +22,23 @@ def create_vehicle(payload: VehiculoCreate, db: Session = Depends(get_db)):
     db.refresh(vehicle)
     return vehicle
 
+
 @router.get("/{vehicle_id}", response_model=VehiculoOut)
 def get_vehicle(vehicle_id: str, db: Session = Depends(get_db)):
     vehicle = db.query(Vehiculo).filter(Vehiculo.id == vehicle_id).first()
     if not vehicle:
         raise HTTPException(status_code=404, detail="Vehículo no encontrado")
+    return vehicle
+
+
+@router.patch("/{vehicle_id}/estado", response_model=VehiculoOut)
+def update_vehicle_estado(vehicle_id: str, payload: VehiculoEstadoActualizar, db: Session = Depends(get_db)):
+    if payload.estado not in ESTADOS_VALIDOS:
+        raise HTTPException(status_code=422, detail=f"estado debe ser uno de: {', '.join(sorted(ESTADOS_VALIDOS))}")
+    vehicle = db.query(Vehiculo).filter(Vehiculo.id == vehicle_id).first()
+    if not vehicle:
+        raise HTTPException(status_code=404, detail="Vehículo no encontrado")
+    vehicle.estado = payload.estado
+    db.commit()
+    db.refresh(vehicle)
     return vehicle

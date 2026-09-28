@@ -31,3 +31,6 @@ class ConductorCreate(BaseModel):
 class ConductorOut(ConductorCreate):
     id: UUID
     model_config = ConfigDict(from_attributes=True)
+
+class VehiculoEstadoActualizar(BaseModel):
+    estado: str
