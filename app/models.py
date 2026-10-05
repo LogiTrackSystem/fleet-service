@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Column, String, Boolean, Integer, Numeric, Date, DateTime, ForeignKey
+from sqlalchemy import Column, String, Boolean, Integer, BigInteger, Numeric, Date, DateTime, ForeignKey, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 from .database import Base
@@ -16,14 +16,19 @@ class Vehiculo(Base):
     estado = Column(String(20), nullable=False, default="active")
     capacidad_refrigeracion = Column(Boolean, nullable=False, default=False)
     certificado_hazmat = Column(Boolean, nullable=False, default=False)
+    capacidad_tanque_l = Column(Numeric(6, 2), nullable=True)
+    consumo_km_por_litro = Column(Numeric(5, 2), nullable=True)
+    tipo_combustible = Column(String(20), nullable=True)
 
 class Conductor(Base):
     __tablename__ = "conductores"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    codigo_conductor = Column(BigInteger, server_default=text("nextval('seq_codigo_conductor')"), unique=True, nullable=False)
     nombre = Column(String(150), nullable=False)
     licencia_numero = Column(String(50), unique=True, nullable=False)
     categorias_licencia = Column(String(100), nullable=True)
     certificacion_hazmat = Column(Boolean, nullable=False, default=False)
+    anios_experiencia = Column(Integer, nullable=False, server_default="0")
     vehiculo_id = Column(UUID(as_uuid=True), ForeignKey("vehiculos.id"), nullable=True)
     horas_semanales = Column(Numeric(5, 2), default=0)
     estado = Column(String(20), nullable=False, default="available")
