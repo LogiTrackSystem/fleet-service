@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Column, String, Boolean, Integer, BigInteger, Numeric, Date, DateTime, ForeignKey, text
+from sqlalchemy import Column, String, Boolean, Integer, BigInteger, Numeric, Date, DateTime, ForeignKey, Index, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 from .database import Base
@@ -32,3 +32,18 @@ class Conductor(Base):
     vehiculo_id = Column(UUID(as_uuid=True), ForeignKey("vehiculos.id"), nullable=True, unique=True)
     horas_semanales = Column(Numeric(5, 2), default=0)
     estado = Column(String(20), nullable=False, default="available")
+
+
+class Reserva(Base):
+    __tablename__ = "reservas_flota"
+    __table_args__ = (
+        Index("uq_reserva_activa_por_envio", "envio_id", unique=True, postgresql_where=text("estado = 'reservada'")),
+        Index("uq_reserva_activa_por_vehiculo", "vehiculo_id", unique=True, postgresql_where=text("estado = 'reservada'")),
+    )
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    envio_id = Column(UUID(as_uuid=True), nullable=False)
+    vehiculo_id = Column(UUID(as_uuid=True), ForeignKey("vehiculos.id"), nullable=False)
+    conductor_id = Column(UUID(as_uuid=True), ForeignKey("conductores.id"), nullable=False)
+    estado = Column(String(20), nullable=False, default="reservada")
+    creado_en = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    liberado_en = Column(DateTime(timezone=True), nullable=True)

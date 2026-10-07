@@ -2,7 +2,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from uuid import UUID
 from decimal import Decimal
 from datetime import date
-from typing import Optional
+from typing import Literal, Optional
 
 TIPOS_VEHICULO = {"furgoneta", "camion", "tractocamion"}
 TIPOS_COMBUSTIBLE = {"diesel", "gasolina", "gnv"}
@@ -147,3 +147,15 @@ class ConductorOut(ConductorBase):
 
 class VinculoVehiculo(BaseModel):
     vehiculo_id: UUID
+
+
+class ReservaSolicitud(BaseModel):
+    envio_id: UUID
+    peso_kg: Decimal = Field(..., gt=0)
+    volumen_m3: Optional[Decimal] = Field(None, gt=0)
+    tipo_carga: Literal["general", "refrigerada"] = "general"
+    es_hazmat: bool = False
+
+
+class LiberarSolicitud(BaseModel):
+    envio_id: UUID
