@@ -29,6 +29,6 @@ class Conductor(Base):
     categorias_licencia = Column(String(100), nullable=True)
     certificacion_hazmat = Column(Boolean, nullable=False, default=False)
     anios_experiencia = Column(Integer, nullable=False, server_default="0")
-    vehiculo_id = Column(UUID(as_uuid=True), ForeignKey("vehiculos.id"), nullable=True)
+    vehiculo_id = Column(UUID(as_uuid=True), ForeignKey("vehiculos.id"), nullable=True, unique=True)
     horas_semanales = Column(Numeric(5, 2), default=0)
     estado = Column(String(20), nullable=False, default="available")

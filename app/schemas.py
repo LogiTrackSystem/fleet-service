@@ -144,3 +144,6 @@ class ConductorOut(ConductorBase):
     id: UUID
     codigo_conductor: int
     model_config = ConfigDict(from_attributes=True)
+
+class VinculoVehiculo(BaseModel):
+    vehiculo_id: UUID
