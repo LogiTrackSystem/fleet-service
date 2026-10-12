@@ -2,15 +2,115 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Response
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from ..database import get_db
 from ..elegibilidad import HAZMAT_ANIOS_MINIMOS
 from ..models import Conductor, Reserva, Vehiculo
-from ..schemas import ReservaSolicitud, LiberarSolicitud
+from ..schemas import ReservaSolicitud, LiberarSolicitud, ViabilidadSolicitud
+
 
 router = APIRouter(prefix="/reservas", tags=["reservas"])
+ESTADOS_VEHICULO_OPERATIVOS = ("active", "en_transito", "en_mantenimiento")  # vuelven a estar disponibles
+ESTADOS_CONDUCTOR_OPERATIVOS = ("available", "en_ruta")
+
+
+def _requisitos(peso_kg, volumen_m3, tipo_carga, es_hazmat):
+    """Condiciones que debe cumplir una pareja vehículo+conductor, en el orden en que se diagnostican."""
+    requisitos = [("CAPACIDAD_EXCEDIDA", [Vehiculo.capacidad_kg >= peso_kg])]
+    if volumen_m3 is not None:
+        requisitos.append(
+            ("VOLUMEN_EXCEDIDO", [or_(Vehiculo.capacidad_m3.is_(None), Vehiculo.capacidad_m3 >= volumen_m3)])
+        )
+    if tipo_carga == "refrigerada":
+        requisitos.append(("SIN_REFRIGERACION", [Vehiculo.capacidad_refrigeracion.is_(True)]))
+    if es_hazmat:
+        requisitos.append((
+            "SIN_HABILITACION_HAZMAT",
+            [
+                Vehiculo.certificado_hazmat.is_(True),
+                Conductor.certificacion_hazmat.is_(True),
+                Conductor.anios_experiencia >= HAZMAT_ANIOS_MINIMOS,
+            ],
+        ))
+    return requisitos
+
+
+def _parejas(db, estados_vehiculo, estados_conductor):
+    return (
+        db.query(Vehiculo, Conductor)
+        .join(Conductor, Conductor.vehiculo_id == Vehiculo.id)
+        .filter(Vehiculo.estado.in_(estados_vehiculo), Conductor.estado.in_(estados_conductor))
+    )
+
+
+def _compatibles(db, requisitos, estados_vehiculo, estados_conductor):
+    consulta = _parejas(db, estados_vehiculo, estados_conductor)
+    for _, condiciones in requisitos:
+        consulta = consulta.filter(*condiciones)
+    return consulta
+
+
+def _mensaje_viabilidad(codigo, payload, maximo_kg):
+    if codigo == "CAPACIDAD_EXCEDIDA":
+        return (
+            f"Ningún vehículo con conductor puede transportar {float(payload.peso_kg):g} kg "
+            f"(la mayor capacidad de la flota es {float(maximo_kg or 0):g} kg)"
+        )
+    if codigo == "VOLUMEN_EXCEDIDO":
+        return f"Ningún vehículo con conductor soporta {float(payload.volumen_m3):g} m³ junto con ese peso"
+    if codigo == "SIN_REFRIGERACION":
+        return "Ningún vehículo con refrigeración y conductor puede transportar esta carga"
+    return (
+        "Ningún vehículo certificado HAZMAT tiene un conductor con certificación HAZMAT "
+        f"y al menos {HAZMAT_ANIOS_MINIMOS} años de experiencia"
+    )
+
+
+def _evaluar_viabilidad(db, payload):
+    requisitos = _requisitos(payload.peso_kg, payload.volumen_m3, payload.tipo_carga, payload.es_hazmat)
+    if _parejas(db, ESTADOS_VEHICULO_OPERATIVOS, ESTADOS_CONDUCTOR_OPERATIVOS).count() == 0:
+        return {
+            "viable": False,
+            "causa": "SIN_FLOTA_OPERATIVA",
+            "mensaje": "No hay vehículos operativos con conductor asignado en la flota",
+            "compatibles": 0,
+            "disponibles_ahora": 0,
+        }
+
+    consulta = _parejas(db, ESTADOS_VEHICULO_OPERATIVOS, ESTADOS_CONDUCTOR_OPERATIVOS)
+    for codigo, condiciones in requisitos:
+        consulta = consulta.filter(*condiciones)
+        if consulta.count() == 0:
+            maximo = (
+                _parejas(db, ESTADOS_VEHICULO_OPERATIVOS, ESTADOS_CONDUCTOR_OPERATIVOS)
+                .with_entities(func.max(Vehiculo.capacidad_kg))
+                .scalar()
+            )
+            return {
+                "viable": False,
+                "causa": codigo,
+                "mensaje": _mensaje_viabilidad(codigo, payload, maximo),
+                "compatibles": 0,
+                "disponibles_ahora": 0,
+            }
+
+    return {
+        "viable": True,
+        "causa": None,
+        "mensaje": None,
+        "compatibles": consulta.count(),
+        "disponibles_ahora": _compatibles(db, requisitos, ("active",), ("available",)).count(),
+    }
+
+
+@router.post("/viabilidad")
+def viabilidad(payload: ViabilidadSolicitud, db: Session = Depends(get_db)):
+    """¿Existe en la flota alguna pareja vehículo+conductor capaz de transportar esta carga?
+    No reserva nada. 'compatibles' cuenta las parejas posibles aunque estén ocupadas;
+    'disponibles_ahora' solo las que están libres en este momento."""
+    return _evaluar_viabilidad(db, payload)
 
 
 def _reserva_activa(db: Session, envio_id):
@@ -49,25 +149,8 @@ def reservar(payload: ReservaSolicitud, response: Response, db: Session = Depend
         response.status_code = 200
         return _detalle(db, existente, ya_existia=True)
 
-    consulta = (
-        db.query(Vehiculo, Conductor)
-        .join(Conductor, Conductor.vehiculo_id == Vehiculo.id)
-        .filter(
-            Vehiculo.estado == "active",
-            Conductor.estado == "available",
-            Vehiculo.capacidad_kg >= payload.peso_kg,
-        )
-    )
-    if payload.volumen_m3 is not None:
-        consulta = consulta.filter(or_(Vehiculo.capacidad_m3.is_(None), Vehiculo.capacidad_m3 >= payload.volumen_m3))
-    if payload.tipo_carga == "refrigerada":
-        consulta = consulta.filter(Vehiculo.capacidad_refrigeracion.is_(True))
-    if payload.es_hazmat:
-        consulta = consulta.filter(
-            Vehiculo.certificado_hazmat.is_(True),
-            Conductor.certificacion_hazmat.is_(True),
-            Conductor.anios_experiencia >= HAZMAT_ANIOS_MINIMOS,
-        )
+    requisitos = _requisitos(payload.peso_kg, payload.volumen_m3, payload.tipo_carga, payload.es_hazmat)
+    consulta = _compatibles(db, requisitos, ("active",), ("available",))
 
     # Mejor ajuste (menor capacidad suficiente) y bloqueo de las filas elegidas.
     # SKIP LOCKED: si otra petición ya tiene bloqueado un vehículo, este se salta.
@@ -105,7 +188,6 @@ def reservar(payload: ReservaSolicitud, response: Response, db: Session = Depend
         )
     db.refresh(reserva)
     return _detalle(db, reserva)
-
 
 @router.post("/liberar")
 def liberar(payload: LiberarSolicitud, db: Session = Depends(get_db)):

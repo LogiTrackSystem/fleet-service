@@ -157,5 +157,11 @@ class ReservaSolicitud(BaseModel):
     es_hazmat: bool = False
 
 
+class ViabilidadSolicitud(BaseModel):
+    peso_kg: Decimal = Field(..., gt=0)
+    volumen_m3: Optional[Decimal] = Field(None, gt=0)
+    tipo_carga: Literal["general", "refrigerada"] = "general"
+    es_hazmat: bool = False
+
 class LiberarSolicitud(BaseModel):
     envio_id: UUID
