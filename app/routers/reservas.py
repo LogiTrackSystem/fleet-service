@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from decimal import Decimal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Response
@@ -6,6 +7,7 @@ from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from ..database import get_db
+from ..division import planificar
 from ..elegibilidad import HAZMAT_ANIOS_MINIMOS
 from ..models import Conductor, Reserva, Vehiculo
 from ..schemas import ReservaSolicitud, LiberarSolicitud, ViabilidadSolicitud
@@ -58,6 +60,12 @@ def _mensaje_viabilidad(codigo, payload, maximo_kg):
             f"Ningún vehículo con conductor puede transportar {float(payload.peso_kg):g} kg "
             f"(la mayor capacidad de la flota es {float(maximo_kg or 0):g} kg)"
         )
+    if codigo == "CARGA_INDIVISIBLE_EXCEDE_CAPACIDAD":
+        return (
+            f"La carga de {float(payload.peso_kg):g} kg no cabe en un solo vehículo "
+            f"(la mayor capacidad compatible es {float(maximo_kg or 0):g} kg) y está marcada como indivisible. "
+            "Si puede dividirse, márquela como divisible."
+        )
     if codigo == "VOLUMEN_EXCEDIDO":
         return f"Ningún vehículo con conductor soporta {float(payload.volumen_m3):g} m³ junto con ese peso"
     if codigo == "SIN_REFRIGERACION":
@@ -68,49 +76,117 @@ def _mensaje_viabilidad(codigo, payload, maximo_kg):
     )
 
 
-def _evaluar_viabilidad(db, payload):
-    requisitos = _requisitos(payload.peso_kg, payload.volumen_m3, payload.tipo_carga, payload.es_hazmat)
-    if _parejas(db, ESTADOS_VEHICULO_OPERATIVOS, ESTADOS_CONDUCTOR_OPERATIVOS).count() == 0:
-        return {
-            "viable": False,
-            "causa": "SIN_FLOTA_OPERATIVA",
-            "mensaje": "No hay vehículos operativos con conductor asignado en la flota",
-            "compatibles": 0,
-            "disponibles_ahora": 0,
-        }
+CONDICIONES_DE_PESO_Y_VOLUMEN = ("CAPACIDAD_EXCEDIDA", "VOLUMEN_EXCEDIDO")
 
-    consulta = _parejas(db, ESTADOS_VEHICULO_OPERATIVOS, ESTADOS_CONDUCTOR_OPERATIVOS)
-    for codigo, condiciones in requisitos:
+
+def _respuesta(viable, causa=None, mensaje=None, compatibles=0, disponibles=0, maximo=None,
+               requiere_division=False, division_posible=False, plan=None):
+    return {
+        "viable": viable,
+        "causa": causa,
+        "mensaje": mensaje,
+        "compatibles": compatibles,
+        "disponibles_ahora": disponibles,
+        "capacidad_maxima_kg": float(maximo) if maximo is not None else None,
+        "requiere_division": requiere_division,
+        "division_posible": division_posible,
+        "partes": (
+            [
+                {
+                    "parte": p["parte"],
+                    "peso_kg": float(p["peso_kg"]),
+                    "volumen_m3": float(p["volumen_m3"]) if p["volumen_m3"] is not None else None,
+                    "capacidad_vehiculo_kg": float(p["capacidad_vehiculo_kg"]),
+                }
+                for p in plan["partes"]
+            ]
+            if plan
+            else None
+        ),
+        "desperdicio_kg": float(plan["desperdicio_kg"]) if plan else None,
+    }
+
+
+def _capacidad_efectiva(vehiculo, payload):
+    """Kilos que el vehículo puede llevar de esta carga: su capacidad en kg y, solo si la carga declara
+    volumen y el vehículo tiene capacidad_m3, lo que cabe por volumen (en proporción al peso)."""
+    cap = Decimal(str(vehiculo.capacidad_kg))
+    if payload.volumen_m3 is not None and vehiculo.capacidad_m3 is not None:
+        por_volumen = Decimal(str(vehiculo.capacidad_m3)) * Decimal(str(payload.peso_kg)) / Decimal(str(payload.volumen_m3))
+        cap = min(cap, por_volumen)
+    return cap
+
+
+def _evaluar_viabilidad(db, payload):
+    """El peso manda: se busca primero un vehículo que lleve toda la carga. Si ninguno puede, la carga
+    solo es viable cuando es divisible y la flota compatible alcanza (se devuelve el plan de partes).
+    El volumen es un criterio secundario: solo cuenta si la carga lo declara y el vehículo tiene capacidad_m3."""
+    base = _parejas(db, ESTADOS_VEHICULO_OPERATIVOS, ESTADOS_CONDUCTOR_OPERATIVOS)
+    if base.count() == 0:
+        return _respuesta(False, "SIN_FLOTA_OPERATIVA", "No hay vehículos operativos con conductor asignado en la flota")
+
+    # 1) Requisitos que no dependen del peso (refrigeración, HAZMAT)
+    consulta = base
+    for codigo, condiciones in _requisitos(payload.peso_kg, payload.volumen_m3, payload.tipo_carga, payload.es_hazmat):
+        if codigo in CONDICIONES_DE_PESO_Y_VOLUMEN:
+            continue
         consulta = consulta.filter(*condiciones)
         if consulta.count() == 0:
-            maximo = (
-                _parejas(db, ESTADOS_VEHICULO_OPERATIVOS, ESTADOS_CONDUCTOR_OPERATIVOS)
-                .with_entities(func.max(Vehiculo.capacidad_kg))
-                .scalar()
-            )
-            return {
-                "viable": False,
-                "causa": codigo,
-                "mensaje": _mensaje_viabilidad(codigo, payload, maximo),
-                "compatibles": 0,
-                "disponibles_ahora": 0,
-            }
+            return _respuesta(False, codigo, _mensaje_viabilidad(codigo, payload, None))
+    pool = consulta.all()
+    maximo = max(Decimal(str(v.capacidad_kg)) for v, _ in pool)
+    libres = sum(1 for v, c in pool if v.estado == "active" and c.estado == "available")
 
-    return {
-        "viable": True,
-        "causa": None,
-        "mensaje": None,
-        "compatibles": consulta.count(),
-        "disponibles_ahora": _compatibles(db, requisitos, ("active",), ("available",)).count(),
-    }
+    # 2) ¿Hay un solo vehículo que lleve toda la carga (peso y, si aplica, volumen)?
+    unico = consulta.filter(Vehiculo.capacidad_kg >= payload.peso_kg)
+    if payload.volumen_m3 is not None:
+        unico = unico.filter(or_(Vehiculo.capacidad_m3.is_(None), Vehiculo.capacidad_m3 >= payload.volumen_m3))
+    if unico.count() > 0:
+        libres_unico = unico.filter(Vehiculo.estado == "active", Conductor.estado == "available").count()
+        return _respuesta(True, compatibles=unico.count(), disponibles=libres_unico, maximo=maximo)
+
+    # 3) Ninguno la lleva completa: hay que dividirla (o rechazarla)
+    por_peso = Decimal(str(payload.peso_kg)) > maximo
+    causa_unica = "CAPACIDAD_EXCEDIDA" if por_peso else "VOLUMEN_EXCEDIDO"
+    plan = planificar(payload.peso_kg, [_capacidad_efectiva(v, payload) for v, _ in pool], payload.volumen_m3)
+
+    if not payload.es_divisible:
+        causa = "CARGA_INDIVISIBLE_EXCEDE_CAPACIDAD" if por_peso else "VOLUMEN_EXCEDIDO"
+        return _respuesta(
+            False, causa, _mensaje_viabilidad(causa, payload, maximo), maximo=maximo,
+            requiere_division=True, division_posible=plan is not None,
+        )
+    if plan is None:
+        if por_peso:
+            total = sum(Decimal(str(v.capacidad_kg)) for v, _ in pool)
+            mensaje = (
+                f"Aun dividiéndola, la flota compatible no alcanza: {float(payload.peso_kg):g} kg solicitados "
+                f"y {float(total):g} kg de capacidad entre todos los vehículos"
+            )
+        else:
+            mensaje = _mensaje_viabilidad("VOLUMEN_EXCEDIDO", payload, maximo)
+        return _respuesta(False, causa_unica, mensaje, maximo=maximo, requiere_division=True)
+    return _respuesta(
+        True, compatibles=len(pool), disponibles=libres, maximo=maximo,
+        requiere_division=True, division_posible=True, plan=plan,
+    )
 
 
 @router.post("/viabilidad")
 def viabilidad(payload: ViabilidadSolicitud, db: Session = Depends(get_db)):
-    """¿Existe en la flota alguna pareja vehículo+conductor capaz de transportar esta carga?
-    No reserva nada. 'compatibles' cuenta las parejas posibles aunque estén ocupadas;
-    'disponibles_ahora' solo las que están libres en este momento."""
+    """¿Existe en la flota alguna pareja vehículo+conductor (o varias, si la carga es divisible) capaz de
+    transportar esta carga? No reserva nada.
+    - 'capacidad_maxima_kg': el mayor peso que lleva un solo vehículo compatible.
+    - 'requiere_division': ningún vehículo la lleva completa; el formulario debe preguntar si es divisible.
+    - 'partes': plan de división (mínimo de vehículos, mínimo desperdicio) cuando es divisible y viable.
+    - 'compatibles' cuenta las parejas posibles aunque estén ocupadas; 'disponibles_ahora' solo las libres."""
     return _evaluar_viabilidad(db, payload)
+
+
+@router.post("/plan-division")
+def plan_division(payload: ViabilidadSolicitud, db: Session = Depends(get_db)):
+    """Plan de división de una carga (no reserva nada): la evalúa como si fuera divisible."""
+    return _evaluar_viabilidad(db, payload.model_copy(update={"es_divisible": True}))
 
 
 def _reserva_activa(db: Session, envio_id):

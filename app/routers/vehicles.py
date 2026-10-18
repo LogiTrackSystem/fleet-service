@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from ..database import get_db
-from ..models import Vehiculo
+from ..models import Reserva, Vehiculo
 from ..schemas import VehiculoCreate, VehiculoOut, VehiculoEstadoActualizar, VehiculoActualizar
 
 router = APIRouter(prefix="/vehiculos", tags=["vehiculos"])
@@ -60,13 +60,30 @@ def update_vehicle(vehicle_id: UUID, payload: VehiculoActualizar, db: Session = 
 
 
 @router.patch("/{vehicle_id}/estado", response_model=VehiculoOut)
-def update_vehicle_estado(vehicle_id: str, payload: VehiculoEstadoActualizar, db: Session = Depends(get_db)):
+def update_vehicle_estado(vehicle_id: UUID, payload: VehiculoEstadoActualizar, db: Session = Depends(get_db)):
     if payload.estado not in ESTADOS_VALIDOS:
         raise HTTPException(status_code=422, detail=f"estado debe ser uno de: {', '.join(sorted(ESTADOS_VALIDOS))}")
     vehicle = db.query(Vehiculo).filter(Vehiculo.id == vehicle_id).first()
     if not vehicle:
         raise HTTPException(status_code=404, detail="Vehículo no encontrado")
-    vehicle.estado = payload.estado
+    reservado = (
+        db.query(Reserva).filter(Reserva.vehiculo_id == vehicle.id, Reserva.estado == "reservada").first() is not None
+    )
+    nuevo = payload.estado
+    if nuevo == "en_transito" and not reservado:
+        # 'en_transito' lo pone solo una reserva; ponerlo a mano dejaría un vehículo bloqueado sin envío
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "codigo": "ESTADO_GESTIONADO_POR_RESERVAS",
+                "mensaje": "El estado 'en_transito' lo asigna el sistema al reservar el vehículo para un envío",
+            },
+        )
+    if nuevo == "active" and reservado:
+        # Con un envío en curso no se puede volver a ofrecer el vehículo (se evitarían dobles asignaciones):
+        # sigue en tránsito hasta que se libere la reserva
+        nuevo = "en_transito"
+    vehicle.estado = nuevo
     db.commit()
     db.refresh(vehicle)
     return vehicle

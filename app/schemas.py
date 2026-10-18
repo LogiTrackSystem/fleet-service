@@ -162,6 +162,7 @@ class ViabilidadSolicitud(BaseModel):
     volumen_m3: Optional[Decimal] = Field(None, gt=0)
     tipo_carga: Literal["general", "refrigerada"] = "general"
     es_hazmat: bool = False
+    es_divisible: bool = False
 
 class LiberarSolicitud(BaseModel):
     envio_id: UUID
