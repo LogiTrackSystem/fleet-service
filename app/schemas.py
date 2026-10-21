@@ -1,7 +1,7 @@
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from uuid import UUID
 from decimal import Decimal
-from datetime import date
+from datetime import date, datetime
 from typing import Literal, Optional
 
 TIPOS_VEHICULO = {"furgoneta", "camion", "tractocamion"}
@@ -100,7 +100,41 @@ class VehiculoActualizar(BaseModel):
 
 class VehiculoOut(VehiculoBase):
     id: UUID
+    # Ubicación real conocida (en reposo) y carga reservada: las mantiene el sistema
+    latitud: Optional[float] = None
+    longitud: Optional[float] = None
+    codigo_pais: Optional[str] = None
+    ubicacion_id: Optional[UUID] = None
+    ubicacion_nombre: Optional[str] = None
+    ubicacion_actualizada_en: Optional[datetime] = None
+    ubicacion_fuente: Optional[str] = None
+    ubicacion_confiable: bool = False
+    peso_reservado_kg: Decimal = Decimal("0")
+    volumen_reservado_m3: Decimal = Decimal("0")
     model_config = ConfigDict(from_attributes=True)
+
+
+class UbicacionActualizar(BaseModel):
+    """Última posición real del vehículo. `tomada_en` es cuándo se tomó: una posición más antigua que la
+    registrada nunca pisa a la más reciente."""
+    latitud: float = Field(..., ge=-90, le=90)
+    longitud: float = Field(..., ge=-180, le=180)
+    codigo_pais: Optional[str] = Field(None, min_length=2, max_length=2)
+    ubicacion_id: Optional[UUID] = None
+    nombre: Optional[str] = Field(None, max_length=150)
+    tomada_en: Optional[datetime] = None
+    fuente: Literal["registro_gestor", "entrega", "interrupcion", "telemetria"] = "registro_gestor"
+
+    @field_validator("codigo_pais")
+    @classmethod
+    def _pais(cls, v):
+        return v.strip().upper() if v else v
+
+
+class UbicacionRespuesta(BaseModel):
+    aplicada: bool
+    motivo: Optional[str] = None
+    vehiculo: VehiculoOut
 
 
 class VehiculoEstadoActualizar(BaseModel):
@@ -149,8 +183,27 @@ class VinculoVehiculo(BaseModel):
     vehiculo_id: UUID
 
 
+class OrigenReserva(BaseModel):
+    latitud: float = Field(..., ge=-90, le=90)
+    longitud: float = Field(..., ge=-180, le=180)
+    codigo_pais: Optional[str] = Field(None, min_length=2, max_length=2)
+
+
 class ReservaSolicitud(BaseModel):
     envio_id: UUID
+    peso_kg: Decimal = Field(..., gt=0)
+    volumen_m3: Optional[Decimal] = Field(None, gt=0)
+    tipo_carga: Literal["general", "refrigerada"] = "general"
+    es_hazmat: bool = False
+    # Opcionales: sin `origen` se usa el criterio anterior (menor capacidad suficiente)
+    origen: Optional[OrigenReserva] = None
+    excluir_vehiculos: list[UUID] = Field(default_factory=list)
+
+
+class ReservaCompartidaSolicitud(BaseModel):
+    """Sumar un envío al viaje en curso de un vehículo concreto (lo decide Routing según la ruta)."""
+    envio_id: UUID
+    vehiculo_id: UUID
     peso_kg: Decimal = Field(..., gt=0)
     volumen_m3: Optional[Decimal] = Field(None, gt=0)
     tipo_carga: Literal["general", "refrigerada"] = "general"
@@ -166,3 +219,5 @@ class ViabilidadSolicitud(BaseModel):
 
 class LiberarSolicitud(BaseModel):
     envio_id: UUID
+    # true = el vehículo no llegó a moverse (se reservó y se canceló antes de salir): conserva su ubicación anterior
+    sin_movimiento: bool = False
