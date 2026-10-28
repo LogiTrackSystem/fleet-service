@@ -24,6 +24,10 @@ def list_vehicles(db: Session = Depends(get_db)):
 @router.post("/", response_model=VehiculoOut, status_code=201)
 def create_vehicle(payload: VehiculoCreate, db: Session = Depends(get_db)):
     vehicle = Vehiculo(**payload.model_dump())
+    # Nace con su ubicación base ya registrada, igual que si el gestor la hubiera fijado con PUT /{id}/ubicacion
+    vehicle.ubicacion_actualizada_en = datetime.now(timezone.utc)
+    vehicle.ubicacion_fuente = "registro_gestor"
+    vehicle.ubicacion_confiable = True
     db.add(vehicle)
     try:
         db.commit()

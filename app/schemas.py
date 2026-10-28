@@ -59,6 +59,28 @@ class VehiculoBase(BaseModel):
 
 
 class VehiculoCreate(VehiculoBase):
+    # Dónde está el vehículo al darlo de alta. Es OBLIGATORIA: un vehículo sin ubicación no aparece en el mapa y solo se
+    # asigna como último recurso. El frontend la toma de la lista de ubicaciones guardadas (GET /ubicaciones: id, nombre,
+    # latitud, longitud y codigo_pais de la ubicación elegida); nadie escribe coordenadas a mano.
+    ubicacion_id: UUID
+    ubicacion_nombre: str = Field(..., min_length=1, max_length=150)
+    latitud: float = Field(..., ge=-90, le=90)
+    longitud: float = Field(..., ge=-180, le=180)
+    codigo_pais: str = Field(..., min_length=2, max_length=2)
+
+    @field_validator("codigo_pais")
+    @classmethod
+    def _pais(cls, v):
+        return v.strip().upper()
+
+    @field_validator("ubicacion_nombre")
+    @classmethod
+    def _nombre_ubicacion(cls, v):
+        v = v.strip()
+        if not v:
+            raise ValueError("El nombre de la ubicación no puede estar vacío")
+        return v
+
     @field_validator("placa")
     @classmethod
     def _placa(cls, v):

@@ -16,7 +16,7 @@ FastAPI + SQLAlchemy + Alembic + PostgreSQL.
 ## Endpoints
 - `GET /health`
 - `GET /vehiculos/` — listar vehículos
-- `POST /vehiculos/` — crear vehículo
+- `POST /vehiculos/` — crear vehículo. La **ubicación base es obligatoria** (`ubicacion_id`, `ubicacion_nombre`, `latitud`, `longitud`, `codigo_pais`, tomados de la ubicación elegida en `GET /ubicaciones`); el vehículo nace con ubicación confiable y se puede asignar de inmediato
 - `GET /vehiculos/{id}` — obtener vehículo por id
 - `GET /conductores/` — listar conductores
 - `POST /conductores/` — crear conductor
