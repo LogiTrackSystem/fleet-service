@@ -65,7 +65,7 @@ def test_el_tope_de_kilometros_descarta_los_demasiado_lejanos(api, db, monkeypat
 
 def test_empate_de_distancia_se_resuelve_siempre_igual(api, db):
     a = vehiculo(db, capacidad=800, ubicacion=CALI, placa="AAA111")
-    b = vehiculo(db, capacidad=800, ubicacion=CALI, placa="BBB222")
+    vehiculo(db, capacidad=800, ubicacion=CALI, placa="BBB222")
     ids = []
     for _ in range(2):
         r = reservar(api, peso=100, punto=CALI)

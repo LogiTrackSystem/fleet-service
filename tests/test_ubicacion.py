@@ -99,7 +99,6 @@ def test_no_se_puede_bajar_la_capacidad_por_debajo_de_lo_reservado(api, db):
 def test_tracking_puede_devolver_la_ubicacion_original_tras_un_viaje_cancelado_antes_de_salir(api, db):
     v = vehiculo(db, ubicacion=CALI)
     db.refresh(v)
-    original = v.ubicacion_actualizada_en
     r = reservar(api, punto=BOGOTA).json()
     desde = r["reposicion"]["desde"]
     api.post("/reservas/liberar", json={"envio_id": r["envio_id"]})

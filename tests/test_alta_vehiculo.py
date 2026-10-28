@@ -29,7 +29,7 @@ def test_el_vehiculo_nace_con_su_ubicacion_confiable(api):
     assert (d["latitud"], d["longitud"], d["codigo_pais"]) == (4.711, -74.0721, "CO")
     assert d["ubicacion_nombre"] == "Bogotá" and d["ubicacion_fuente"] == "registro_gestor"
     assert d["ubicacion_confiable"] is True and d["ubicacion_actualizada_en"] is not None
-    assert api.get(f"/vehiculos/placa/KQA794").json()["latitud"] == 4.711
+    assert api.get("/vehiculos/placa/KQA794").json()["latitud"] == 4.711
 
 
 @pytest.mark.parametrize("campo", ["ubicacion_id", "ubicacion_nombre", "latitud", "longitud", "codigo_pais"])
